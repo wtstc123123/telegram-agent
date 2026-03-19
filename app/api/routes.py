@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Header, HTTPException
 
 from app.core.config import get_settings
@@ -5,6 +7,8 @@ from app.schemas.agent import AnalyzeRequest
 from app.schemas.telegram import TelegramWebhookEnvelope
 from app.services.agent_service import AgentService
 from app.services.telegram_service import TelegramService
+
+logger = logging.getLogger(__name__)
 
 health_router = APIRouter(tags=["health"])
 telegram_router = APIRouter(prefix="/telegram", tags=["telegram"])
@@ -38,15 +42,23 @@ async def telegram_webhook(
     if settings.telegram_webhook_secret and x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
         raise HTTPException(status_code=401, detail="Invalid Telegram secret token")
 
-    message = envelope.message or envelope.edited_message or {}
-    chat = message.get("chat", {})
-    from_user = message.get("from", {})
+    message = envelope.message or envelope.edited_message
+    if not isinstance(message, dict):
+        # Non-message update type (e.g. callback_query, channel_post) – ignore safely.
+        return {"status": "ignored"}
+
+    chat = message.get("chat") or {}
+    from_user = message.get("from") or {}
     text = message.get("text", "")
 
     if not chat or not text:
         return {"status": "ignored"}
 
     chat_id = chat.get("id")
+    if chat_id is None:
+        logger.warning("Telegram webhook: received message without chat.id; ignoring.")
+        return {"status": "ignored"}
+
     user_id = str(from_user.get("id", chat_id))
     session_id = f"telegram:{chat_id}"
 
