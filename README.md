@@ -1,6 +1,6 @@
 # Telegram AI Raw-Data Agent Starter
 
-A clean Python/FastAPI starter for the architecture you described:
+A Python/FastAPI backend that connects a Telegram bot to upstream APIs and an OpenAI reasoning model. Users send messages via Telegram; the backend fetches relevant raw data, analyzes it with OpenAI, and replies with text and optional Mermaid diagrams.
 
 ```mermaid
 flowchart TD
@@ -11,23 +11,29 @@ flowchart TD
     E --> A
 ```
 
-## What this project already includes
-- Telegram webhook endpoint
-- OpenAI Responses API integration
-- A raw-data broker that fetches from clearly labeled upstream APIs
-- A place to expand future APIs without rewriting the whole app
-- Session handling via Redis
-- Mermaid diagram source generation
+## What this project includes
+- Telegram webhook endpoint with secret-token validation
+- OpenAI Responses API integration (multi-turn reasoning via `previous_response_id`)
+- Data broker that fetches from clearly labeled upstream APIs
+- Conditional billing API call (triggered by keywords: billing, invoice, payment, cost, subscription)
+- Session persistence via Redis
+- Mermaid diagram source generation with path-traversal protection
+- AWS Secrets Manager integration (optional, for production deployments)
 - Docker setup for local development
+- CI pipeline (ruff lint + pytest) via GitHub Actions
 
 ## Project structure
 
 ```text
-telegram-ai-agent-starter/
+telegram-agent/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 ├── app/
 │   ├── api/
 │   │   └── routes.py
 │   ├── core/
+│   │   ├── aws_secrets.py
 │   │   ├── config.py
 │   │   └── logging.py
 │   ├── integrations/
@@ -51,35 +57,54 @@ telegram-ai-agent-starter/
 ├── infrastructure/
 │   └── README.md
 ├── tests/
-│   └── test_health.py
+│   ├── test_health.py
+│   └── test_fixes.py
 ├── .env.example
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
 ```
 
+## API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | App metadata (name, environment, docs link) |
+| `GET` | `/healthz` | Health check → `{"status": "ok"}` |
+| `POST` | `/agent/analyze` | Direct analysis endpoint |
+| `POST` | `/telegram/webhook` | Telegram webhook receiver |
+
+### Direct analysis request body
+
+```json
+{
+  "user_id": "user-123",
+  "user_message": "Analyze my API usage and draw a diagram",
+  "session_id": null
+}
+```
+
+### Telegram webhook
+Requires the `X-Telegram-Bot-Api-Secret-Token` header to match `TELEGRAM_WEBHOOK_SECRET`.
+Non-message updates (callback queries, channel posts, etc.) return `{"status": "ignored"}` safely.
+
 ## Clearly labeled API integration points
 
 ### 1) Primary raw data API
 File: `app/integrations/primary_data_api.py`
 
-This is the **main upstream API you said you want to access**.
-Replace these placeholders:
+This is the **main upstream API**. Replace these placeholders with your real values:
 - `PRIMARY_DATA_API_BASE_URL`
 - `PRIMARY_DATA_API_KEY`
 - request path `/v1/raw-data/query`
-- request/response schema to match your real service
+- request/response schema
 
-### 2) Billing API example
+### 2) Billing API
 File: `app/integrations/billing_api.py`
 
-This is a second API example that shows how to expand later.
-You can add more files like:
-- `crm_api.py`
-- `analytics_api.py`
-- `inventory_api.py`
+Called **only** when the user message contains the keywords: `billing`, `invoice`, `payment`, `cost`, or `subscription`. This avoids unnecessary API calls for unrelated queries.
 
-Then wire them into `app/services/data_broker.py`.
+You can add more integrations (e.g. `crm_api.py`, `analytics_api.py`) and wire them into `app/services/data_broker.py`.
 
 ## Step-by-step setup
 
@@ -87,7 +112,7 @@ Then wire them into `app/services/data_broker.py`.
 ```bash
 cp .env.example .env
 ```
-Fill in your credentials.
+Fill in your credentials (see [Environment variables](#environment-variables) below).
 
 ### 2. Start locally
 ```bash
@@ -110,41 +135,96 @@ curl -X POST http://localhost:8000/agent/analyze \
 ```
 
 ### 5. Connect Telegram webhook
-Set Telegram webhook to:
-```text
-https://YOUR_PUBLIC_DOMAIN/telegram/webhook
+Register your webhook with Telegram:
+```bash
+curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
+  -d "url=https://YOUR_PUBLIC_DOMAIN/telegram/webhook" \
+  -d "secret_token=<YOUR_TELEGRAM_WEBHOOK_SECRET>"
 ```
-with your configured secret token.
+
+## Environment variables
+
+Copy `.env.example` to `.env` and fill in the values.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_NAME` | `telegram-ai-agent-starter` | Application name |
+| `APP_ENV` | `dev` | Environment (`dev` / `prod`) |
+| `APP_HOST` | `0.0.0.0` | Bind host |
+| `APP_PORT` | `8000` | Bind port |
+| `LOG_LEVEL` | `INFO` | Log level |
+| `BASE_URL` | `https://example.com` | Public base URL |
+| `LOAD_SECRETS_MANAGER` | `false` | Enable AWS Secrets Manager at startup |
+| `AWS_REGION` | `us-east-1` | AWS region |
+| `AWS_SECRETS_MANAGER_SECRET_ID` | _(empty)_ | Secret ID in Secrets Manager |
+| `TELEGRAM_BOT_TOKEN` | _(empty)_ | Telegram Bot API token |
+| `TELEGRAM_WEBHOOK_SECRET` | _(empty)_ | Webhook validation secret |
+| `OPENAI_API_KEY` | _(empty)_ | OpenAI API key |
+| `OPENAI_MODEL` | `gpt-5.2` | OpenAI model |
+| `OPENAI_REASONING_EFFORT` | `low` | Reasoning budget |
+| `OPENAI_TEXT_VERBOSITY` | `low` | Response verbosity |
+| `REDIS_URL` | `redis://redis:6379/0` | Redis connection string |
+| `SESSION_TTL_SECONDS` | `86400` | Session TTL (24 hours) |
+| `PRIMARY_DATA_API_BASE_URL` | _(empty)_ | Primary API base URL |
+| `PRIMARY_DATA_API_KEY` | _(empty)_ | Primary API key |
+| `PRIMARY_DATA_API_TIMEOUT_SECONDS` | `20` | Request timeout (s) |
+| `PRIMARY_DATA_API_NAME` | `primary_data_api` | Source label in broker output |
+| `BILLING_API_BASE_URL` | _(empty)_ | Billing API base URL |
+| `BILLING_API_KEY` | _(empty)_ | Billing API key |
+| `BILLING_API_TIMEOUT_SECONDS` | `20` | Request timeout (s) |
+| `BILLING_API_NAME` | `billing_api` | Source label in broker output |
+
+### AWS Secrets Manager (optional)
+
+Set `LOAD_SECRETS_MANAGER=true` and provide `AWS_SECRETS_MANAGER_SECRET_ID`. At startup, `app/core/aws_secrets.py` fetches the secret JSON and merges it into the environment. Existing environment variables are **not** overwritten, so local `.env` values take precedence.
+
+## Testing
+
+Install dev dependencies and run the test suite:
+
+```bash
+pip install -r requirements.txt pytest ruff
+ruff check .
+pytest -v
+```
+
+The CI pipeline (`ci.yml`) runs these same steps automatically on every push and pull request.
+
+### What is tested
+
+| File | Tests |
+|------|-------|
+| `tests/test_health.py` | Health endpoint returns `{"status": "ok"}` |
+| `tests/test_fixes.py` | Telegram webhook ignores non-message updates; Mermaid renderer path-traversal protection; OpenAI response JSON parsing and fallback handling |
 
 ## How expansion works
 
 ### Add a new upstream API
-1. Create a new file in `app/integrations/`
-2. Inherit from `BaseRawApiClient`
-3. Add env vars to `.env.example`
-4. Register it in `DataBroker`
+1. Create `app/integrations/<name>_api.py` inheriting from `BaseRawApiClient`
+2. Add the required env vars to `.env.example`
+3. Register the client in `app/services/data_broker.py`
 
 ### Add a new diagram type
 1. Add a renderer under `app/renderers/`
-2. Update `AgentService` to save or return it
+2. Update `AgentService` to call and return it
 
-## Assumptions in this starter
-- Read-only raw data access
-- Small payloads are passed to the model
-- Redis is acceptable for lightweight session state
-- Mermaid source files are enough for phase 1
-- OpenAI Responses API is used as the main agent interface
+## Architecture notes
+- Read-only raw data access — the model never writes to upstream systems
+- Small, scoped payloads are passed to the model (not whole databases)
+- Redis provides lightweight multi-turn session state
+- Mermaid source (`.mmd`) files are saved server-side; swap in a Mermaid CLI container to produce PNG/SVG
+- The data broker is the single gatekeeper between upstream APIs and the model
 
-## Recommended next build steps
-1. Replace sample upstream API paths with your real endpoints
-2. Add account linking between Telegram and your internal user IDs
-3. Add redaction before sending raw payloads to the model
+## Recommended next steps
+1. Replace placeholder upstream API paths with your real endpoints
+2. Add account linking between Telegram user IDs and your internal user IDs
+3. Add payload redaction before sending raw data to the model
 4. Replace Mermaid file save with real PNG/SVG rendering
 5. Add audit logging and rate limiting
 6. Add tests for the upstream API adapters
 
 ## Important notes
-- Keep secrets server-side only
-- Do not pass whole databases to the model
+- Keep all secrets server-side; never expose them in responses or logs
+- Do not pass entire database dumps to the model
 - Keep the broker in control of what raw data reaches the model
-- The project is intentionally modular so you can expand API coverage later
+- The project is intentionally modular so you can expand API coverage incrementally
